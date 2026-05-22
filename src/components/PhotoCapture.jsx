@@ -1,4 +1,5 @@
 import { useId, useRef } from 'react'
+import { logPhotoFile, logPhotoStep } from '../utils/photoDebug'
 
 function CameraIcon() {
   return (
@@ -18,7 +19,14 @@ function CameraIcon() {
   )
 }
 
-export default function PhotoCapture({ label, required, preview, onCapture, hasError }) {
+export default function PhotoCapture({
+  label,
+  required,
+  preview,
+  onCapture,
+  hasError,
+  compressing = false,
+}) {
   const id = useId()
   const inputRef = useRef(null)
 
@@ -29,26 +37,46 @@ export default function PhotoCapture({ label, required, preview, onCapture, hasE
         {required && <span className="field__required" aria-hidden="true"> *</span>}
       </label>
 
+      <p className="photo-capture__hint">
+        PNG o JPG. Se comprimen automáticamente para un envío más rápido.
+      </p>
+
       <input
         ref={inputRef}
         id={id}
         type="file"
-        accept="image/*"
+        accept="image/png,image/jpeg,image/jpg"
         capture="environment"
         className="photo-capture__input"
         onChange={(e) => {
+          logPhotoStep('PhotoCapture → input onChange', { label })
           const file = e.target.files?.[0]
-          if (file) onCapture(file)
+          if (file) {
+            logPhotoFile('PhotoCapture → archivo seleccionado', file, { label })
+            onCapture(file)
+          } else {
+            logPhotoStep('PhotoCapture → sin archivo en input', { label })
+          }
+          e.target.value = ''
+          logPhotoStep('PhotoCapture → input value reseteado', { label })
         }}
       />
 
       <button
         type="button"
         className="photo-capture__btn"
-        onClick={() => inputRef.current?.click()}
+        disabled={compressing}
+        onClick={() => {
+          logPhotoStep('PhotoCapture → clic en Tomar foto', {
+            label,
+            compressing,
+            tienePreview: Boolean(preview),
+          })
+          inputRef.current?.click()
+        }}
       >
         <CameraIcon />
-        {preview ? 'Cambiar foto' : 'Tomar foto'}
+        {compressing ? 'Comprimiendo…' : preview ? 'Cambiar foto' : 'Tomar foto'}
       </button>
 
       {preview && (

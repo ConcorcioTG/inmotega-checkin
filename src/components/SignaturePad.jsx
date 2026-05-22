@@ -21,7 +21,7 @@ export default function SignaturePad({ onChange, hasError }) {
 
     const ctx = canvas.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.strokeStyle = '#6b1b00'
+    ctx.strokeStyle = '#000000'
     ctx.lineWidth = 2.2
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'

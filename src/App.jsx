@@ -1,10 +1,23 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import FloatingField from './components/FloatingField'
 import SignaturePad from './components/SignaturePad'
 import PhotoCapture from './components/PhotoCapture'
+import Toast from './components/Toast'
+import { JotformSubmitError, submitCheckin } from './services/jotformSubmit'
+import {
+  compressImageForJotform,
+  ImageCompressError,
+  ImageFormatError,
+  IMAGE_COMPRESS_MESSAGE,
+  IMAGE_FORMAT_MESSAGE,
+  isAllowedImageFormat,
+} from './utils/imageForJotform'
+import { logPhotoFile, logPhotoStep } from './utils/photoDebug'
 import logoSuites from './assets/LOGO-SUITES-ESLOGAN.png'
 import logoInmotega from './assets/LOGO-INMOTEGA.png'
 import './App.css'
+
+const TERMS_URL = 'https://inmotega.com.mx/aviso-de-privacidad/'
 
 const INITIAL_FORM = {
   huesped1: '',
@@ -18,12 +31,34 @@ const INITIAL_FORM = {
   fotoTrasera: null,
 }
 
+/** El botón Continue solo se habilita cuando todo es válido, incluidas fotos PNG/JPG */
+function isCheckinReady(form) {
+  const fechasValidas =
+    form.fechaInicio &&
+    form.fechaSalida &&
+    form.fechaSalida >= form.fechaInicio
+
+  return (
+    form.huesped1.trim() !== '' &&
+    fechasValidas &&
+    form.terminos &&
+    Boolean(form.firma) &&
+    isAllowedImageFormat(form.fotoFrontal) &&
+    isAllowedImageFormat(form.fotoTrasera)
+  )
+}
+
 function App() {
   const [form, setForm] = useState(INITIAL_FORM)
   const [previews, setPreviews] = useState({ frontal: null, trasera: null })
   const [errors, setErrors] = useState({})
   const [showTerms, setShowTerms] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [toast, setToast] = useState(null)
+  const [formKey, setFormKey] = useState(0)
+  const [compressingPhoto, setCompressingPhoto] = useState(null)
+
+  const closeToast = useCallback(() => setToast(null), [])
 
   const update = (field) => (e) => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value
@@ -31,14 +66,59 @@ function App() {
     setErrors((prev) => ({ ...prev, [field]: undefined }))
   }
 
-  const handlePhoto = (field, previewKey) => (file) => {
-    const url = URL.createObjectURL(file)
-    setPreviews((prev) => {
-      if (prev[previewKey]) URL.revokeObjectURL(prev[previewKey])
-      return { ...prev, [previewKey]: url }
-    })
-    setForm((prev) => ({ ...prev, [field]: file }))
+  const handlePhoto = (field, previewKey) => async (file) => {
+    logPhotoStep('App.handlePhoto → inicio', { field, previewKey })
+    logPhotoFile('App.handlePhoto → archivo recibido', file, { field })
+
+    const formatoValido = isAllowedImageFormat(file)
+    logPhotoStep('App.handlePhoto → validación formato', { field, formatoValido })
+
+    if (!formatoValido) {
+      logPhotoStep('App.handlePhoto → rechazado (formato inválido)', { field })
+      setErrors((prev) => ({ ...prev, [field]: IMAGE_FORMAT_MESSAGE }))
+      return
+    }
+
+    setCompressingPhoto(field)
     setErrors((prev) => ({ ...prev, [field]: undefined }))
+    logPhotoStep('App.handlePhoto → iniciando compresión', { field })
+
+    try {
+      const compressed = await compressImageForJotform(file)
+      const url = URL.createObjectURL(compressed)
+      logPhotoStep('App.handlePhoto → preview URL creada', {
+        field,
+        previewKey,
+        url: url.slice(0, 50) + '…',
+      })
+
+      setPreviews((prev) => {
+        if (prev[previewKey]) {
+          logPhotoStep('App.handlePhoto → revocando preview anterior', { previewKey })
+          URL.revokeObjectURL(prev[previewKey])
+        }
+        return { ...prev, [previewKey]: url }
+      })
+      setForm((prev) => {
+        logPhotoFile('App.handlePhoto → guardado en form state', compressed, { field })
+        return { ...prev, [field]: compressed }
+      })
+      logPhotoStep('App.handlePhoto → éxito', { field })
+    } catch (err) {
+      let message = IMAGE_COMPRESS_MESSAGE
+      if (err instanceof ImageFormatError) message = err.message
+      if (err instanceof ImageCompressError) message = err.message
+      logPhotoStep('App.handlePhoto → error', {
+        field,
+        message,
+        errorName: err?.name,
+        errorDetail: err?.message,
+      })
+      setErrors((prev) => ({ ...prev, [field]: message }))
+    } finally {
+      setCompressingPhoto(null)
+      logPhotoStep('App.handlePhoto → fin', { field })
+    }
   }
 
   const validate = () => {
@@ -52,11 +132,39 @@ function App() {
     }
     if (!form.terminos) next.terminos = 'Debes aceptar los términos'
     if (!form.firma) next.firma = 'La firma es obligatoria'
-    if (!form.fotoFrontal) next.fotoFrontal = 'Requerida'
-    if (!form.fotoTrasera) next.fotoTrasera = 'Requerida'
+    logPhotoStep('App.validate → revisando fotos')
+    if (!form.fotoFrontal) {
+      next.fotoFrontal = 'Requerida'
+      logPhotoStep('App.validate → fotoFrontal faltante')
+    } else if (!isAllowedImageFormat(form.fotoFrontal)) {
+      next.fotoFrontal = IMAGE_FORMAT_MESSAGE
+      logPhotoFile('App.validate → fotoFrontal formato inválido', form.fotoFrontal)
+    } else {
+      logPhotoFile('App.validate → fotoFrontal OK', form.fotoFrontal)
+    }
+    if (!form.fotoTrasera) {
+      next.fotoTrasera = 'Requerida'
+      logPhotoStep('App.validate → fotoTrasera faltante')
+    } else if (!isAllowedImageFormat(form.fotoTrasera)) {
+      next.fotoTrasera = IMAGE_FORMAT_MESSAGE
+      logPhotoFile('App.validate → fotoTrasera formato inválido', form.fotoTrasera)
+    } else {
+      logPhotoFile('App.validate → fotoTrasera OK', form.fotoTrasera)
+    }
 
     setErrors(next)
     return Object.keys(next).length === 0
+  }
+
+  const resetForm = () => {
+    setForm(INITIAL_FORM)
+    setErrors({})
+    setPreviews((prev) => {
+      if (prev.frontal) URL.revokeObjectURL(prev.frontal)
+      if (prev.trasera) URL.revokeObjectURL(prev.trasera)
+      return { frontal: null, trasera: null }
+    })
+    setFormKey((k) => k + 1)
   }
 
   const handleSubmit = async (e) => {
@@ -64,11 +172,28 @@ function App() {
     if (!validate()) return
 
     setSubmitting(true)
+    setToast(null)
+
     try {
-      // Backend se conectará en la siguiente fase
-      await new Promise((resolve) => setTimeout(resolve, 600))
-      console.log('Check-in listo para enviar:', form)
-      alert('Formulario válido. En la siguiente fase conectamos el backend.')
+      const result = await submitCheckin(form)
+
+      setToast({
+        type: 'success',
+        message:
+          result?.content?.submissionID
+            ? `¡Check-in enviado correctamente! (ID: ${result.content.submissionID})`
+            : '¡Check-in enviado correctamente! Gracias por registrarte.',
+      })
+      resetForm()
+    } catch (err) {
+      const message =
+        err instanceof JotformSubmitError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Ocurrió un error inesperado. Intenta de nuevo.'
+
+      setToast({ type: 'error', message })
     } finally {
       setSubmitting(false)
     }
@@ -100,7 +225,12 @@ function App() {
           <hr className="checkin-divider" />
         </header>
 
-        <form className="checkin-form" onSubmit={handleSubmit} noValidate>
+        <form
+          className="checkin-form"
+          onSubmit={handleSubmit}
+          noValidate
+          aria-busy={submitting}
+        >
           <p className="form-instruction">
             Completa el Nombre y Apellido (puedes usar NA si es el caso)
             <span className="field__required" aria-hidden="true"> *</span>
@@ -192,13 +322,14 @@ function App() {
               <span className="checkbox-row__box" aria-hidden="true" />
               <span className="checkbox-row__text">
                 Al dar click acepto los términos y condiciones{' '}
-                <button
-                  type="button"
+                <a
+                  href={TERMS_URL}
                   className="link-btn"
-                  onClick={() => setShowTerms(true)}
+                  target="_blank"
+                  rel="noopener noreferrer"
                 >
                   da clic aquí para ver
-                </button>
+                </a>
                 <span className="field__required" aria-hidden="true"> *</span>
               </span>
             </label>
@@ -210,6 +341,7 @@ function App() {
               Firma<span className="field__required" aria-hidden="true"> *</span>
             </h2>
             <SignaturePad
+              key={`firma-${formKey}`}
               onChange={(data) => {
                 setForm((prev) => ({ ...prev, firma: data }))
                 setErrors((prev) => ({ ...prev, firma: undefined }))
@@ -221,18 +353,22 @@ function App() {
 
           <section className="form-section">
             <PhotoCapture
+              key={`frontal-${formKey}`}
               label="Foto frontal de Identificación Oficial"
               required
               preview={previews.frontal}
+              compressing={compressingPhoto === 'fotoFrontal'}
               onCapture={handlePhoto('fotoFrontal', 'frontal')}
               hasError={Boolean(errors.fotoFrontal)}
             />
             {errors.fotoFrontal && <p className="field-error">{errors.fotoFrontal}</p>}
 
             <PhotoCapture
+              key={`trasera-${formKey}`}
               label="Foto trasera de Identificación Oficial"
               required
               preview={previews.trasera}
+              compressing={compressingPhoto === 'fotoTrasera'}
               onCapture={handlePhoto('fotoTrasera', 'trasera')}
               hasError={Boolean(errors.fotoTrasera)}
             />
@@ -240,7 +376,18 @@ function App() {
           </section>
 
           <footer className="form-footer">
-            <button type="submit" className="btn-continue" disabled={submitting}>
+            <button
+              type="submit"
+              className="btn-continue"
+              disabled={submitting || compressingPhoto || !isCheckinReady(form)}
+              title={
+                compressingPhoto
+                  ? 'Espera a que termine la compresión de la foto'
+                  : !isCheckinReady(form) && !submitting
+                    ? 'Completa todos los campos y sube fotos en PNG o JPG'
+                    : undefined
+              }
+            >
               {submitting ? 'Enviando…' : 'Continue'}
             </button>
           </footer>
@@ -260,15 +407,32 @@ function App() {
             <p>
               Al completar este formulario, el huésped acepta las políticas de estadía,
               horarios de entrada y salida, y el uso responsable de las instalaciones de
-              Suites Inmotega. El contenido capturado (firma e identificación) se utiliza
-              únicamente para fines de registro y seguridad.
+              Suites Inmotega.
             </p>
-            <button type="button" className="btn-continue btn-continue--small" onClick={() => setShowTerms(false)}>
+            <a
+              href={TERMS_URL}
+              className="modal__link"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Ver aviso de privacidad completo
+            </a>
+            <button
+              type="button"
+              className="btn-continue btn-continue--small"
+              onClick={() => setShowTerms(false)}
+            >
               Cerrar
             </button>
           </div>
         </div>
       )}
+
+      <Toast
+        message={toast?.message}
+        type={toast?.type}
+        onClose={closeToast}
+      />
     </div>
   )
 }
