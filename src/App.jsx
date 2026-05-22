@@ -4,17 +4,19 @@ import SignaturePad from './components/SignaturePad'
 import PhotoCapture from './components/PhotoCapture'
 import Toast from './components/Toast'
 import { JotformSubmitError, submitCheckin } from './services/jotformSubmit'
-import {
-  hasPhotoFile,
-  preparePhotoFile,
-  readPhotoAsDataUrl,
-} from './utils/imageForJotform'
+import { dataUrlToFile } from './utils/imageForJotform'
 import {
   clearCheckinStorage,
   loadCheckinDraft,
   saveCheckinDraft,
 } from './utils/formStorage'
-import { logPhotoFile, logPhotoStep } from './utils/photoDebug'
+import {
+  clearPhotosStorage,
+  hasStoredPhoto,
+  INITIAL_PHOTOS,
+  loadPhotosFromStorage,
+  savePhotosToStorage,
+} from './utils/photoStorage'
 import logoSuites from './assets/LOGO-SUITES-ESLOGAN.png'
 import logoInmotega from './assets/LOGO-INMOTEGA.png'
 import './App.css'
@@ -29,12 +31,9 @@ const INITIAL_FORM = {
   fechaSalida: '',
   terminos: false,
   firma: null,
-  fotoFrontal: null,
-  fotoTrasera: null,
 }
 
-/** El botón Continue solo se habilita cuando todo es válido, incluidas las fotos */
-function isCheckinReady(form) {
+function isCheckinReady(form, photos) {
   const fechasValidas =
     form.fechaInicio &&
     form.fechaSalida &&
@@ -45,64 +44,55 @@ function isCheckinReady(form) {
     fechasValidas &&
     form.terminos &&
     Boolean(form.firma) &&
-    hasPhotoFile(form.fotoFrontal) &&
-    hasPhotoFile(form.fotoTrasera)
+    hasStoredPhoto(photos.frontal) &&
+    hasStoredPhoto(photos.trasera)
   )
 }
 
 function App() {
-  const [form, setForm] = useState(INITIAL_FORM)
-  const [previews, setPreviews] = useState({ frontal: null, trasera: null })
+  const [form, setForm] = useState(() => {
+    const draft = loadCheckinDraft()
+    return draft ? { ...INITIAL_FORM, ...draft } : INITIAL_FORM
+  })
+  const [photos, setPhotos] = useState(() => loadPhotosFromStorage())
   const [errors, setErrors] = useState({})
   const [showTerms, setShowTerms] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState(null)
   const [formKey, setFormKey] = useState(0)
   const [savingPhoto, setSavingPhoto] = useState(null)
-  const [isHydrating, setIsHydrating] = useState(true)
   const skipSaveRef = useRef(true)
-  const photoBusyRef = useRef(false)
+  const photosReadyRef = useRef(true)
 
   const closeToast = useCallback(() => setToast(null), [])
 
-  const applyDraft = useCallback((draft) => {
-    if (!draft || photoBusyRef.current) {
-      logPhotoStep('App.applyDraft → omitido', {
-        sinDraft: !draft,
-        photoBusy: photoBusyRef.current,
-      })
-      return
-    }
-    setForm(draft.form)
-    setPreviews(draft.previews)
-    logPhotoStep('App.applyDraft → borrador restaurado')
+  useEffect(() => {
+    skipSaveRef.current = false
   }, [])
 
-  /** Restaurar borrador solo al cargar la página (recarga tras cámara en móvil) */
+  /** Guardar fotos cada vez que cambien */
   useEffect(() => {
-    loadCheckinDraft()
-      .then(applyDraft)
-      .finally(() => {
-        setIsHydrating(false)
-        skipSaveRef.current = false
-      })
-  }, [applyDraft])
+    if (!photosReadyRef.current) return
+    savePhotosToStorage(photos)
+    console.log('[CheckIn:Foto] guardadas en storage', {
+      frontal: hasStoredPhoto(photos.frontal),
+      trasera: hasStoredPhoto(photos.trasera),
+    })
+  }, [photos])
 
-  /** Autoguardado en localStorage + sessionStorage */
+  /** Autoguardado campos de texto, fechas, firma */
   useEffect(() => {
-    if (skipSaveRef.current || isHydrating) return undefined
-
-    const timer = setTimeout(() => {
-      saveCheckinDraft(form)
-    }, 400)
-
+    if (skipSaveRef.current) return undefined
+    const timer = setTimeout(() => saveCheckinDraft(form), 400)
     return () => clearTimeout(timer)
-  }, [form, isHydrating])
+  }, [form])
 
-  /** Guardar al ocultar la página (antes de abrir la cámara) */
   useEffect(() => {
     const persistNow = () => {
-      if (!skipSaveRef.current) saveCheckinDraft(form)
+      if (!skipSaveRef.current) {
+        saveCheckinDraft(form)
+        savePhotosToStorage(photos)
+      }
     }
 
     const onVisibility = () => {
@@ -116,7 +106,7 @@ function App() {
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('pagehide', persistNow)
     }
-  }, [form])
+  }, [form, photos])
 
   const update = (field) => (e) => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value
@@ -124,52 +114,35 @@ function App() {
     setErrors((prev) => ({ ...prev, [field]: undefined }))
   }
 
-  const handlePhoto = (field, previewKey) => async (file) => {
-    logPhotoStep('App.handlePhoto → inicio', { field, previewKey })
-    logPhotoFile('App.handlePhoto → archivo recibido', file, { field })
+  /** Mismo patrón: FileReader → base64 → setPhotos */
+  const handleCapture = (side) => (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
 
-    const photoFile = preparePhotoFile(file)
-    if (!photoFile) {
-      setErrors((prev) => ({
-        ...prev,
-        [field]: 'No se recibió la foto. Intenta de nuevo.',
-      }))
-      return
+    e.target.value = ''
+    setSavingPhoto(side)
+
+    const errorKey = side === 'frontal' ? 'fotoFrontal' : 'fotoTrasera'
+    setErrors((prev) => ({ ...prev, [errorKey]: undefined }))
+
+    const reader = new FileReader()
+
+    reader.onload = (event) => {
+      const base64Image = event.target.result
+      setPhotos((prev) => ({ ...prev, [side]: base64Image }))
+      setSavingPhoto(null)
+      console.log('[CheckIn:Foto] capturada y guardada', side)
     }
 
-    photoBusyRef.current = true
-    setSavingPhoto(field)
-    setErrors((prev) => ({ ...prev, [field]: undefined }))
-
-    try {
-      const dataUrl = await readPhotoAsDataUrl(photoFile)
-      logPhotoStep('App.handlePhoto → dataUrl generada', {
-        field,
-        longitud: dataUrl?.length,
-      })
-
-      setPreviews((prev) => ({ ...prev, [previewKey]: dataUrl }))
-
-      let nextForm = null
-      setForm((prev) => {
-        nextForm = { ...prev, [field]: photoFile }
-        return nextForm
-      })
-
-      logPhotoFile('App.handlePhoto → guardado en estado', photoFile, { field })
-
-      await saveCheckinDraft(nextForm)
-      logPhotoStep('App.handlePhoto → guardado en storage OK', { field })
-    } catch (err) {
-      logPhotoStep('App.handlePhoto → error', { field, error: err?.message })
+    reader.onerror = () => {
       setErrors((prev) => ({
         ...prev,
-        [field]: 'No se pudo guardar la foto. Intenta de nuevo.',
+        [errorKey]: 'No se pudo leer la foto. Intenta de nuevo.',
       }))
-    } finally {
-      photoBusyRef.current = false
       setSavingPhoto(null)
     }
+
+    reader.readAsDataURL(file)
   }
 
   const validate = () => {
@@ -183,13 +156,8 @@ function App() {
     }
     if (!form.terminos) next.terminos = 'Debes aceptar los términos'
     if (!form.firma) next.firma = 'La firma es obligatoria'
-    logPhotoStep('App.validate → revisando fotos')
-    if (!hasPhotoFile(form.fotoFrontal)) {
-      next.fotoFrontal = 'Requerida'
-    }
-    if (!hasPhotoFile(form.fotoTrasera)) {
-      next.fotoTrasera = 'Requerida'
-    }
+    if (!hasStoredPhoto(photos.frontal)) next.fotoFrontal = 'Requerida'
+    if (!hasStoredPhoto(photos.trasera)) next.fotoTrasera = 'Requerida'
 
     setErrors(next)
     return Object.keys(next).length === 0
@@ -197,9 +165,10 @@ function App() {
 
   const resetForm = () => {
     clearCheckinStorage()
+    clearPhotosStorage()
     setForm(INITIAL_FORM)
+    setPhotos(INITIAL_PHOTOS)
     setErrors({})
-    setPreviews({ frontal: null, trasera: null })
     setFormKey((k) => k + 1)
   }
 
@@ -211,7 +180,14 @@ function App() {
     setToast(null)
 
     try {
-      const result = await submitCheckin(form)
+      const fotoFrontal = await dataUrlToFile(photos.frontal, 'identificacion-frontal.jpg')
+      const fotoTrasera = await dataUrlToFile(photos.trasera, 'identificacion-trasera.jpg')
+
+      const result = await submitCheckin({
+        ...form,
+        fotoFrontal,
+        fotoTrasera,
+      })
 
       setToast({
         type: 'success',
@@ -265,7 +241,7 @@ function App() {
           className="checkin-form"
           onSubmit={handleSubmit}
           noValidate
-          aria-busy={submitting || isHydrating}
+          aria-busy={submitting}
         >
           <p className="form-instruction">
             Completa el Nombre y Apellido (puedes usar NA si es el caso)
@@ -390,23 +366,23 @@ function App() {
 
           <section className="form-section">
             <PhotoCapture
-              key={`frontal-${formKey}`}
               label="Foto frontal de Identificación Oficial"
               required
-              preview={previews.frontal}
-              saving={savingPhoto === 'fotoFrontal'}
-              onCapture={handlePhoto('fotoFrontal', 'frontal')}
+              preview={photos.frontal}
+              saved={hasStoredPhoto(photos.frontal)}
+              saving={savingPhoto === 'frontal'}
+              onCapture={handleCapture('frontal')}
               hasError={Boolean(errors.fotoFrontal)}
             />
             {errors.fotoFrontal && <p className="field-error">{errors.fotoFrontal}</p>}
 
             <PhotoCapture
-              key={`trasera-${formKey}`}
               label="Foto trasera de Identificación Oficial"
               required
-              preview={previews.trasera}
-              saving={savingPhoto === 'fotoTrasera'}
-              onCapture={handlePhoto('fotoTrasera', 'trasera')}
+              preview={photos.trasera}
+              saved={hasStoredPhoto(photos.trasera)}
+              saving={savingPhoto === 'trasera'}
+              onCapture={handleCapture('trasera')}
               hasError={Boolean(errors.fotoTrasera)}
             />
             {errors.fotoTrasera && <p className="field-error">{errors.fotoTrasera}</p>}
@@ -416,11 +392,11 @@ function App() {
             <button
               type="submit"
               className="btn-continue"
-              disabled={submitting || savingPhoto || !isCheckinReady(form)}
+              disabled={submitting || savingPhoto || !isCheckinReady(form, photos)}
               title={
                 savingPhoto
                   ? 'Espera a que se guarde la foto'
-                  : !isCheckinReady(form) && !submitting
+                  : !isCheckinReady(form, photos) && !submitting
                     ? 'Completa todos los campos y toma las dos fotos'
                     : undefined
               }
@@ -465,11 +441,7 @@ function App() {
         </div>
       )}
 
-      <Toast
-        message={toast?.message}
-        type={toast?.type}
-        onClose={closeToast}
-      />
+      <Toast message={toast?.message} type={toast?.type} onClose={closeToast} />
     </div>
   )
 }

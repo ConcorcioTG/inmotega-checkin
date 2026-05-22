@@ -477,11 +477,11 @@
   margin-bottom: 0.35rem;
 }
 
-.photo-capture__hint {
-  margin: 0 0 0.5rem;
-  font-size: 0.78rem;
-  color: rgba(107, 27, 0, 0.65);
-  line-height: 1.35;
+.photo-capture__saved {
+  margin: 0.35rem 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #049e38;
 }
 
 .photo-capture__input {

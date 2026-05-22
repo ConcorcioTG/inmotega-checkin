@@ -1,6 +1,5 @@
 /**
- * Borrador del check-in en localStorage y sessionStorage.
- * Las fotos y la firma se guardan como data URL (JSON).
+ * Borrador del formulario (sin fotos — las fotos van en photoStorage.js).
  */
 
 const STORAGE_KEY = 'inmotega-checkin-draft'
@@ -16,32 +15,8 @@ function readJson(storage) {
   }
 }
 
-function fileToStored(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () =>
-      resolve({
-        dataUrl: reader.result,
-        name: file.name,
-        type: file.type,
-      })
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-}
-
-async function storedToFile(stored) {
-  if (!stored?.dataUrl) return null
-  const res = await fetch(stored.dataUrl)
-  const blob = await res.blob()
-  return new File([blob], stored.name || 'foto.jpg', {
-    type: stored.type || blob.type || 'image/jpeg',
-  })
-}
-
-/** Serializa el estado del formulario para guardar */
-export async function serializeCheckinDraft(form) {
-  const draft = {
+export function serializeCheckinDraft(form) {
+  return {
     version: VERSION,
     huesped1: form.huesped1 ?? '',
     huesped2: form.huesped2 ?? '',
@@ -50,22 +25,14 @@ export async function serializeCheckinDraft(form) {
     fechaSalida: form.fechaSalida ?? '',
     terminos: Boolean(form.terminos),
     firma: form.firma ?? null,
-    fotoFrontal: null,
-    fotoTrasera: null,
     savedAt: Date.now(),
   }
-
-  if (form.fotoFrontal) draft.fotoFrontal = await fileToStored(form.fotoFrontal)
-  if (form.fotoTrasera) draft.fotoTrasera = await fileToStored(form.fotoTrasera)
-
-  return draft
 }
 
-/** Restaura form + URLs de preview desde el borrador */
-export async function deserializeCheckinDraft(draft) {
+export function deserializeCheckinDraft(draft) {
   if (!draft || draft.version !== VERSION) return null
 
-  const form = {
+  return {
     huesped1: draft.huesped1 ?? '',
     huesped2: draft.huesped2 ?? '',
     huespedExtra: draft.huespedExtra ?? '',
@@ -73,26 +40,10 @@ export async function deserializeCheckinDraft(draft) {
     fechaSalida: draft.fechaSalida ?? '',
     terminos: Boolean(draft.terminos),
     firma: draft.firma ?? null,
-    fotoFrontal: null,
-    fotoTrasera: null,
   }
-
-  const previews = { frontal: null, trasera: null }
-
-  if (draft.fotoFrontal) {
-    form.fotoFrontal = await storedToFile(draft.fotoFrontal)
-    previews.frontal = draft.fotoFrontal.dataUrl
-  }
-  if (draft.fotoTrasera) {
-    form.fotoTrasera = await storedToFile(draft.fotoTrasera)
-    previews.trasera = draft.fotoTrasera.dataUrl
-  }
-
-  return { form, previews }
 }
 
-/** Guarda en localStorage y sessionStorage */
-export async function saveCheckinDraft(form) {
+export function saveCheckinDraft(form) {
   const hasData =
     form.huesped1 ||
     form.huesped2 ||
@@ -100,15 +51,12 @@ export async function saveCheckinDraft(form) {
     form.fechaInicio ||
     form.fechaSalida ||
     form.terminos ||
-    form.firma ||
-    form.fotoFrontal ||
-    form.fotoTrasera
+    form.firma
 
   if (!hasData) return
 
   try {
-    const draft = await serializeCheckinDraft(form)
-    const json = JSON.stringify(draft)
+    const json = JSON.stringify(serializeCheckinDraft(form))
     localStorage.setItem(STORAGE_KEY, json)
     sessionStorage.setItem(STORAGE_KEY, json)
   } catch (err) {
@@ -116,14 +64,12 @@ export async function saveCheckinDraft(form) {
   }
 }
 
-/** Lee sessionStorage primero; si no hay, localStorage */
-export async function loadCheckinDraft() {
+export function loadCheckinDraft() {
   const draft = readJson(sessionStorage) ?? readJson(localStorage)
   if (!draft) return null
   return deserializeCheckinDraft(draft)
 }
 
-/** Limpia ambos al enviar con éxito */
 export function clearCheckinStorage() {
   localStorage.removeItem(STORAGE_KEY)
   sessionStorage.removeItem(STORAGE_KEY)

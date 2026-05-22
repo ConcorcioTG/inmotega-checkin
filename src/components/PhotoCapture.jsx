@@ -1,5 +1,4 @@
 import { useId, useRef } from 'react'
-import { logPhotoFile, logPhotoStep } from '../utils/photoDebug'
 
 function CameraIcon() {
   return (
@@ -26,6 +25,7 @@ export default function PhotoCapture({
   onCapture,
   hasError,
   saving = false,
+  saved = false,
 }) {
   const id = useId()
   const inputRef = useRef(null)
@@ -44,20 +44,7 @@ export default function PhotoCapture({
         accept="image/*"
         capture="environment"
         className="photo-capture__input"
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          logPhotoStep('PhotoCapture → onChange', {
-            label,
-            tieneArchivo: Boolean(file),
-            size: file?.size,
-          })
-
-          if (!file) return
-
-          logPhotoFile('PhotoCapture → archivo', file, { label })
-          onCapture(file)
-          e.target.value = ''
-        }}
+        onChange={(e) => onCapture(e)}
       />
 
       <button
@@ -69,6 +56,12 @@ export default function PhotoCapture({
         <CameraIcon />
         {saving ? 'Guardando…' : preview ? 'Cambiar foto' : 'Tomar foto'}
       </button>
+
+      {saved && preview && (
+        <p className="photo-capture__saved" role="status">
+          ✓ Foto guardada
+        </p>
+      )}
 
       {preview && (
         <div className="photo-capture__preview">
