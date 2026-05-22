@@ -5,12 +5,9 @@ import PhotoCapture from './components/PhotoCapture'
 import Toast from './components/Toast'
 import { JotformSubmitError, submitCheckin } from './services/jotformSubmit'
 import {
-  compressImageForJotform,
-  ImageCompressError,
-  ImageFormatError,
-  IMAGE_COMPRESS_MESSAGE,
-  IMAGE_FORMAT_MESSAGE,
-  isAllowedImageFormat,
+  hasPhotoFile,
+  preparePhotoFile,
+  readPhotoAsDataUrl,
 } from './utils/imageForJotform'
 import {
   clearCheckinStorage,
@@ -36,7 +33,7 @@ const INITIAL_FORM = {
   fotoTrasera: null,
 }
 
-/** El botón Continue solo se habilita cuando todo es válido, incluidas fotos PNG/JPG */
+/** El botón Continue solo se habilita cuando todo es válido, incluidas las fotos */
 function isCheckinReady(form) {
   const fechasValidas =
     form.fechaInicio &&
@@ -48,8 +45,8 @@ function isCheckinReady(form) {
     fechasValidas &&
     form.terminos &&
     Boolean(form.firma) &&
-    isAllowedImageFormat(form.fotoFrontal) &&
-    isAllowedImageFormat(form.fotoTrasera)
+    hasPhotoFile(form.fotoFrontal) &&
+    hasPhotoFile(form.fotoTrasera)
   )
 }
 
@@ -61,7 +58,7 @@ function App() {
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState(null)
   const [formKey, setFormKey] = useState(0)
-  const [compressingPhoto, setCompressingPhoto] = useState(null)
+  const [savingPhoto, setSavingPhoto] = useState(null)
   const [isHydrating, setIsHydrating] = useState(true)
   const skipSaveRef = useRef(true)
   const photoBusyRef = useRef(false)
@@ -131,43 +128,47 @@ function App() {
     logPhotoStep('App.handlePhoto → inicio', { field, previewKey })
     logPhotoFile('App.handlePhoto → archivo recibido', file, { field })
 
+    const photoFile = preparePhotoFile(file)
+    if (!photoFile) {
+      setErrors((prev) => ({
+        ...prev,
+        [field]: 'No se recibió la foto. Intenta de nuevo.',
+      }))
+      return
+    }
+
     photoBusyRef.current = true
-    setCompressingPhoto(field)
+    setSavingPhoto(field)
     setErrors((prev) => ({ ...prev, [field]: undefined }))
 
     try {
-      const compressed = await compressImageForJotform(file)
-      const url = URL.createObjectURL(compressed)
-
-      setPreviews((prev) => {
-        if (prev[previewKey]?.startsWith('blob:')) {
-          URL.revokeObjectURL(prev[previewKey])
-        }
-        return { ...prev, [previewKey]: url }
+      const dataUrl = await readPhotoAsDataUrl(photoFile)
+      logPhotoStep('App.handlePhoto → dataUrl generada', {
+        field,
+        longitud: dataUrl?.length,
       })
+
+      setPreviews((prev) => ({ ...prev, [previewKey]: dataUrl }))
 
       let nextForm = null
       setForm((prev) => {
-        nextForm = { ...prev, [field]: compressed }
+        nextForm = { ...prev, [field]: photoFile }
         return nextForm
       })
 
-      logPhotoFile('App.handlePhoto → guardado OK', compressed, { field })
+      logPhotoFile('App.handlePhoto → guardado en estado', photoFile, { field })
 
-      // Guardado inmediato tras foto (crítico en Samsung al volver de cámara)
       await saveCheckinDraft(nextForm)
-      logPhotoStep('App.handlePhoto → borrador guardado en storage', { field })
+      logPhotoStep('App.handlePhoto → guardado en storage OK', { field })
     } catch (err) {
-      let message = IMAGE_COMPRESS_MESSAGE
-      if (err instanceof ImageFormatError) message = err.message
-      if (err instanceof ImageCompressError) message = err.message
-      logPhotoStep('App.handlePhoto → error', { field, message })
-      setErrors((prev) => ({ ...prev, [field]: message }))
-      throw err
+      logPhotoStep('App.handlePhoto → error', { field, error: err?.message })
+      setErrors((prev) => ({
+        ...prev,
+        [field]: 'No se pudo guardar la foto. Intenta de nuevo.',
+      }))
     } finally {
       photoBusyRef.current = false
-      setCompressingPhoto(null)
-      logPhotoStep('App.handlePhoto → fin', { field })
+      setSavingPhoto(null)
     }
   }
 
@@ -183,23 +184,11 @@ function App() {
     if (!form.terminos) next.terminos = 'Debes aceptar los términos'
     if (!form.firma) next.firma = 'La firma es obligatoria'
     logPhotoStep('App.validate → revisando fotos')
-    if (!form.fotoFrontal) {
+    if (!hasPhotoFile(form.fotoFrontal)) {
       next.fotoFrontal = 'Requerida'
-      logPhotoStep('App.validate → fotoFrontal faltante')
-    } else if (!isAllowedImageFormat(form.fotoFrontal)) {
-      next.fotoFrontal = IMAGE_FORMAT_MESSAGE
-      logPhotoFile('App.validate → fotoFrontal formato inválido', form.fotoFrontal)
-    } else {
-      logPhotoFile('App.validate → fotoFrontal OK', form.fotoFrontal)
     }
-    if (!form.fotoTrasera) {
+    if (!hasPhotoFile(form.fotoTrasera)) {
       next.fotoTrasera = 'Requerida'
-      logPhotoStep('App.validate → fotoTrasera faltante')
-    } else if (!isAllowedImageFormat(form.fotoTrasera)) {
-      next.fotoTrasera = IMAGE_FORMAT_MESSAGE
-      logPhotoFile('App.validate → fotoTrasera formato inválido', form.fotoTrasera)
-    } else {
-      logPhotoFile('App.validate → fotoTrasera OK', form.fotoTrasera)
     }
 
     setErrors(next)
@@ -210,11 +199,7 @@ function App() {
     clearCheckinStorage()
     setForm(INITIAL_FORM)
     setErrors({})
-    setPreviews((prev) => {
-      if (prev.frontal?.startsWith('blob:')) URL.revokeObjectURL(prev.frontal)
-      if (prev.trasera?.startsWith('blob:')) URL.revokeObjectURL(prev.trasera)
-      return { frontal: null, trasera: null }
-    })
+    setPreviews({ frontal: null, trasera: null })
     setFormKey((k) => k + 1)
   }
 
@@ -409,7 +394,7 @@ function App() {
               label="Foto frontal de Identificación Oficial"
               required
               preview={previews.frontal}
-              compressing={compressingPhoto === 'fotoFrontal'}
+              saving={savingPhoto === 'fotoFrontal'}
               onCapture={handlePhoto('fotoFrontal', 'frontal')}
               hasError={Boolean(errors.fotoFrontal)}
             />
@@ -420,7 +405,7 @@ function App() {
               label="Foto trasera de Identificación Oficial"
               required
               preview={previews.trasera}
-              compressing={compressingPhoto === 'fotoTrasera'}
+              saving={savingPhoto === 'fotoTrasera'}
               onCapture={handlePhoto('fotoTrasera', 'trasera')}
               hasError={Boolean(errors.fotoTrasera)}
             />
@@ -431,12 +416,12 @@ function App() {
             <button
               type="submit"
               className="btn-continue"
-              disabled={submitting || compressingPhoto || !isCheckinReady(form)}
+              disabled={submitting || savingPhoto || !isCheckinReady(form)}
               title={
-                compressingPhoto
-                  ? 'Espera a que termine la compresión de la foto'
+                savingPhoto
+                  ? 'Espera a que se guarde la foto'
                   : !isCheckinReady(form) && !submitting
-                    ? 'Completa todos los campos y sube fotos en PNG o JPG'
+                    ? 'Completa todos los campos y toma las dos fotos'
                     : undefined
               }
             >

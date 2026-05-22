@@ -25,7 +25,7 @@ export default function PhotoCapture({
   preview,
   onCapture,
   hasError,
-  compressing = false,
+  saving = false,
 }) {
   const id = useId()
   const inputRef = useRef(null)
@@ -37,10 +37,6 @@ export default function PhotoCapture({
         {required && <span className="field__required" aria-hidden="true"> *</span>}
       </label>
 
-      <p className="photo-capture__hint">
-        PNG o JPG. Se comprimen automáticamente para un envío más rápido.
-      </p>
-
       <input
         ref={inputRef}
         id={id}
@@ -48,45 +44,30 @@ export default function PhotoCapture({
         accept="image/*"
         capture="environment"
         className="photo-capture__input"
-        onChange={async (e) => {
-          logPhotoStep('PhotoCapture → input onChange', { label })
+        onChange={(e) => {
           const file = e.target.files?.[0]
-          if (!file) {
-            logPhotoStep('PhotoCapture → sin archivo en input', { label })
-            return
-          }
+          logPhotoStep('PhotoCapture → onChange', {
+            label,
+            tieneArchivo: Boolean(file),
+            size: file?.size,
+          })
 
-          logPhotoFile('PhotoCapture → archivo seleccionado', file, { label })
+          if (!file) return
 
-          try {
-            await onCapture(file)
-            e.target.value = ''
-            logPhotoStep('PhotoCapture → foto guardada, input reseteado', { label })
-          } catch (err) {
-            e.target.value = ''
-            logPhotoStep('PhotoCapture → onCapture falló', {
-              label,
-              error: err?.message,
-            })
-          }
+          logPhotoFile('PhotoCapture → archivo', file, { label })
+          onCapture(file)
+          e.target.value = ''
         }}
       />
 
       <button
         type="button"
         className="photo-capture__btn"
-        disabled={compressing}
-        onClick={() => {
-          logPhotoStep('PhotoCapture → clic en Tomar foto', {
-            label,
-            compressing,
-            tienePreview: Boolean(preview),
-          })
-          inputRef.current?.click()
-        }}
+        disabled={saving}
+        onClick={() => inputRef.current?.click()}
       >
         <CameraIcon />
-        {compressing ? 'Comprimiendo…' : preview ? 'Cambiar foto' : 'Tomar foto'}
+        {saving ? 'Guardando…' : preview ? 'Cambiar foto' : 'Tomar foto'}
       </button>
 
       {preview && (

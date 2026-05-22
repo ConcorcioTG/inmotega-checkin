@@ -3,11 +3,7 @@ import {
   getJotformConfig,
   JOTFORM_QIDS,
 } from '../config/jotform'
-import {
-  ImageFormatError,
-  IMAGE_FORMAT_MESSAGE,
-  isAllowedImageFormat,
-} from '../utils/imageForJotform'
+import { hasPhotoFile } from '../utils/imageForJotform'
 import { logPhotoFile, logPhotoStep } from '../utils/photoDebug'
 import {
   appendDateFields,
@@ -74,13 +70,13 @@ export async function submitCheckin(form) {
   const url = `${base}/form/${formId}/submissions?apiKey=${encodeURIComponent(apiKey)}`
 
   logPhotoStep('submitCheckin → validando fotos antes de enviar')
-  const frontalOk = isAllowedImageFormat(form.fotoFrontal)
-  const traseraOk = isAllowedImageFormat(form.fotoTrasera)
+  const frontalOk = hasPhotoFile(form.fotoFrontal)
+  const traseraOk = hasPhotoFile(form.fotoTrasera)
   logPhotoStep('submitCheckin → resultado validación', { frontalOk, traseraOk })
 
   if (!frontalOk || !traseraOk) {
-    logPhotoStep('submitCheckin → abortado (formato foto inválido)')
-    throw new ImageFormatError(IMAGE_FORMAT_MESSAGE)
+    logPhotoStep('submitCheckin → abortado (faltan fotos)')
+    throw new JotformSubmitError('Faltan las fotos de identificación.')
   }
 
   logPhotoStep('submitCheckin → enviando POST a JotForm', {
