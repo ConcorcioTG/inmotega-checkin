@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import FloatingField from './components/FloatingField'
 import SignaturePad from './components/SignaturePad'
 import PhotoCapture from './components/PhotoCapture'
@@ -12,6 +12,11 @@ import {
   IMAGE_FORMAT_MESSAGE,
   isAllowedImageFormat,
 } from './utils/imageForJotform'
+import {
+  clearCheckinStorage,
+  loadCheckinDraft,
+  saveCheckinDraft,
+} from './utils/formStorage'
 import { logPhotoFile, logPhotoStep } from './utils/photoDebug'
 import logoSuites from './assets/LOGO-SUITES-ESLOGAN.png'
 import logoInmotega from './assets/LOGO-INMOTEGA.png'
@@ -57,8 +62,67 @@ function App() {
   const [toast, setToast] = useState(null)
   const [formKey, setFormKey] = useState(0)
   const [compressingPhoto, setCompressingPhoto] = useState(null)
+  const [isHydrating, setIsHydrating] = useState(true)
+  const skipSaveRef = useRef(true)
 
   const closeToast = useCallback(() => setToast(null), [])
+
+  const applyDraft = useCallback((draft) => {
+    if (!draft) return
+    setForm(draft.form)
+    setPreviews(draft.previews)
+  }, [])
+
+  /** Restaurar borrador al cargar (p. ej. tras abrir la cámara en móvil) */
+  useEffect(() => {
+    loadCheckinDraft()
+      .then(applyDraft)
+      .finally(() => {
+        setIsHydrating(false)
+        skipSaveRef.current = false
+      })
+  }, [applyDraft])
+
+  /** Volver desde caché del navegador (bfcache) */
+  useEffect(() => {
+    const onPageShow = (event) => {
+      if (event.persisted) {
+        loadCheckinDraft().then(applyDraft)
+      }
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => window.removeEventListener('pageshow', onPageShow)
+  }, [applyDraft])
+
+  /** Autoguardado en localStorage + sessionStorage */
+  useEffect(() => {
+    if (skipSaveRef.current || isHydrating) return undefined
+
+    const timer = setTimeout(() => {
+      saveCheckinDraft(form)
+    }, 400)
+
+    return () => clearTimeout(timer)
+  }, [form, isHydrating])
+
+  /** Guardar al ocultar la página (antes de abrir la cámara) */
+  useEffect(() => {
+    const persistNow = () => {
+      if (!skipSaveRef.current) saveCheckinDraft(form)
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') persistNow()
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', persistNow)
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', persistNow)
+    }
+  }, [form])
 
   const update = (field) => (e) => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value
@@ -157,11 +221,12 @@ function App() {
   }
 
   const resetForm = () => {
+    clearCheckinStorage()
     setForm(INITIAL_FORM)
     setErrors({})
     setPreviews((prev) => {
-      if (prev.frontal) URL.revokeObjectURL(prev.frontal)
-      if (prev.trasera) URL.revokeObjectURL(prev.trasera)
+      if (prev.frontal?.startsWith('blob:')) URL.revokeObjectURL(prev.frontal)
+      if (prev.trasera?.startsWith('blob:')) URL.revokeObjectURL(prev.trasera)
       return { frontal: null, trasera: null }
     })
     setFormKey((k) => k + 1)
@@ -229,7 +294,7 @@ function App() {
           className="checkin-form"
           onSubmit={handleSubmit}
           noValidate
-          aria-busy={submitting}
+          aria-busy={submitting || isHydrating}
         >
           <p className="form-instruction">
             Completa el Nombre y Apellido (puedes usar NA si es el caso)
@@ -342,6 +407,7 @@ function App() {
             </h2>
             <SignaturePad
               key={`firma-${formKey}`}
+              initialValue={form.firma}
               onChange={(data) => {
                 setForm((prev) => ({ ...prev, firma: data }))
                 setErrors((prev) => ({ ...prev, firma: undefined }))

@@ -731,8 +731,8 @@
 }
 
 .toast--success {
-  background: var(--brown);
-  color: var(--cream);
+  background: #049e38;
+  color: #fff;
 }
 
 .toast--error {

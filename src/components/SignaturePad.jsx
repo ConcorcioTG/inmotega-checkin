@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-export default function SignaturePad({ onChange, hasError }) {
+export default function SignaturePad({ onChange, hasError, initialValue = null }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
   const lastPointRef = useRef(null)
@@ -38,6 +38,24 @@ export default function SignaturePad({ onChange, hasError }) {
     window.addEventListener('resize', resizeCanvas)
     return () => window.removeEventListener('resize', resizeCanvas)
   }, [resizeCanvas])
+
+  /** Restaura firma guardada en storage (p. ej. tras volver de la cámara en móvil) */
+  useEffect(() => {
+    if (!initialValue) return
+
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const img = new Image()
+    img.onload = () => {
+      const rect = canvas.getBoundingClientRect()
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(img, 0, 0, rect.width, rect.height)
+      setIsEmpty(false)
+      hasDrawnRef.current = true
+    }
+    img.src = initialValue
+  }, [initialValue])
 
   const getPoint = (event) => {
     const canvas = canvasRef.current
