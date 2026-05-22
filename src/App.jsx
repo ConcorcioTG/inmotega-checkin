@@ -64,16 +64,24 @@ function App() {
   const [compressingPhoto, setCompressingPhoto] = useState(null)
   const [isHydrating, setIsHydrating] = useState(true)
   const skipSaveRef = useRef(true)
+  const photoBusyRef = useRef(false)
 
   const closeToast = useCallback(() => setToast(null), [])
 
   const applyDraft = useCallback((draft) => {
-    if (!draft) return
+    if (!draft || photoBusyRef.current) {
+      logPhotoStep('App.applyDraft → omitido', {
+        sinDraft: !draft,
+        photoBusy: photoBusyRef.current,
+      })
+      return
+    }
     setForm(draft.form)
     setPreviews(draft.previews)
+    logPhotoStep('App.applyDraft → borrador restaurado')
   }, [])
 
-  /** Restaurar borrador al cargar (p. ej. tras abrir la cámara en móvil) */
+  /** Restaurar borrador solo al cargar la página (recarga tras cámara en móvil) */
   useEffect(() => {
     loadCheckinDraft()
       .then(applyDraft)
@@ -81,17 +89,6 @@ function App() {
         setIsHydrating(false)
         skipSaveRef.current = false
       })
-  }, [applyDraft])
-
-  /** Volver desde caché del navegador (bfcache) */
-  useEffect(() => {
-    const onPageShow = (event) => {
-      if (event.persisted) {
-        loadCheckinDraft().then(applyDraft)
-      }
-    }
-    window.addEventListener('pageshow', onPageShow)
-    return () => window.removeEventListener('pageshow', onPageShow)
   }, [applyDraft])
 
   /** Autoguardado en localStorage + sessionStorage */
@@ -134,52 +131,41 @@ function App() {
     logPhotoStep('App.handlePhoto → inicio', { field, previewKey })
     logPhotoFile('App.handlePhoto → archivo recibido', file, { field })
 
-    const formatoValido = isAllowedImageFormat(file)
-    logPhotoStep('App.handlePhoto → validación formato', { field, formatoValido })
-
-    if (!formatoValido) {
-      logPhotoStep('App.handlePhoto → rechazado (formato inválido)', { field })
-      setErrors((prev) => ({ ...prev, [field]: IMAGE_FORMAT_MESSAGE }))
-      return
-    }
-
+    photoBusyRef.current = true
     setCompressingPhoto(field)
     setErrors((prev) => ({ ...prev, [field]: undefined }))
-    logPhotoStep('App.handlePhoto → iniciando compresión', { field })
 
     try {
       const compressed = await compressImageForJotform(file)
       const url = URL.createObjectURL(compressed)
-      logPhotoStep('App.handlePhoto → preview URL creada', {
-        field,
-        previewKey,
-        url: url.slice(0, 50) + '…',
-      })
 
       setPreviews((prev) => {
-        if (prev[previewKey]) {
-          logPhotoStep('App.handlePhoto → revocando preview anterior', { previewKey })
+        if (prev[previewKey]?.startsWith('blob:')) {
           URL.revokeObjectURL(prev[previewKey])
         }
         return { ...prev, [previewKey]: url }
       })
+
+      let nextForm = null
       setForm((prev) => {
-        logPhotoFile('App.handlePhoto → guardado en form state', compressed, { field })
-        return { ...prev, [field]: compressed }
+        nextForm = { ...prev, [field]: compressed }
+        return nextForm
       })
-      logPhotoStep('App.handlePhoto → éxito', { field })
+
+      logPhotoFile('App.handlePhoto → guardado OK', compressed, { field })
+
+      // Guardado inmediato tras foto (crítico en Samsung al volver de cámara)
+      await saveCheckinDraft(nextForm)
+      logPhotoStep('App.handlePhoto → borrador guardado en storage', { field })
     } catch (err) {
       let message = IMAGE_COMPRESS_MESSAGE
       if (err instanceof ImageFormatError) message = err.message
       if (err instanceof ImageCompressError) message = err.message
-      logPhotoStep('App.handlePhoto → error', {
-        field,
-        message,
-        errorName: err?.name,
-        errorDetail: err?.message,
-      })
+      logPhotoStep('App.handlePhoto → error', { field, message })
       setErrors((prev) => ({ ...prev, [field]: message }))
+      throw err
     } finally {
+      photoBusyRef.current = false
       setCompressingPhoto(null)
       logPhotoStep('App.handlePhoto → fin', { field })
     }

@@ -45,20 +45,30 @@ export default function PhotoCapture({
         ref={inputRef}
         id={id}
         type="file"
-        accept="image/png,image/jpeg,image/jpg"
+        accept="image/*"
         capture="environment"
         className="photo-capture__input"
-        onChange={(e) => {
+        onChange={async (e) => {
           logPhotoStep('PhotoCapture → input onChange', { label })
           const file = e.target.files?.[0]
-          if (file) {
-            logPhotoFile('PhotoCapture → archivo seleccionado', file, { label })
-            onCapture(file)
-          } else {
+          if (!file) {
             logPhotoStep('PhotoCapture → sin archivo en input', { label })
+            return
           }
-          e.target.value = ''
-          logPhotoStep('PhotoCapture → input value reseteado', { label })
+
+          logPhotoFile('PhotoCapture → archivo seleccionado', file, { label })
+
+          try {
+            await onCapture(file)
+            e.target.value = ''
+            logPhotoStep('PhotoCapture → foto guardada, input reseteado', { label })
+          } catch (err) {
+            e.target.value = ''
+            logPhotoStep('PhotoCapture → onCapture falló', {
+              label,
+              error: err?.message,
+            })
+          }
         }}
       />
 
