@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/jotform-api/:path*",
+      "destination": "https://api.jotform.com/:path*"
+    }
+  ]
+}

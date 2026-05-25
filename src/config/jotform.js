@@ -14,8 +14,8 @@ export const JOTFORM_QIDS = {
   terminos1: '122',
   terminos2: '123',
   firma: '124',
-  fotoFrontal: '125',
-  fotoTrasera: '126',
+  /** Short Text — enlace único con fotos frente + reverso (ImgBB) */
+  fotosLink: '131',
 }
 
 export function getJotformConfig() {

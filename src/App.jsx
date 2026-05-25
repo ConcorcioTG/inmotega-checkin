@@ -4,12 +4,20 @@ import SignaturePad from './components/SignaturePad'
 import PhotoCapture from './components/PhotoCapture'
 import Toast from './components/Toast'
 import { JotformSubmitError, submitCheckin } from './services/jotformSubmit'
-import { dataUrlToFile } from './utils/imageForJotform'
+import { PhotoUploadError, uploadPhotoAndGetUrl } from './services/photoUpload'
+import {
+  combinePhotosVertical,
+  optimizePhotoForJotform,
+} from './utils/imageForJotform'
 import {
   clearCheckinStorage,
   loadCheckinDraft,
   saveCheckinDraft,
 } from './utils/formStorage'
+import {
+  normalizeGuestsForSubmit,
+  normalizeGuestsOnFieldExit,
+} from './utils/guestFields'
 import {
   clearPhotosStorage,
   hasStoredPhoto,
@@ -61,8 +69,10 @@ function App() {
   const [toast, setToast] = useState(null)
   const [formKey, setFormKey] = useState(0)
   const [savingPhoto, setSavingPhoto] = useState(null)
+  const [uploadingSharedLink, setUploadingSharedLink] = useState(false)
   const skipSaveRef = useRef(true)
   const photosReadyRef = useRef(true)
+  const guestSectionRef = useRef(null)
 
   const closeToast = useCallback(() => setToast(null), [])
 
@@ -114,6 +124,19 @@ function App() {
     setErrors((prev) => ({ ...prev, [field]: undefined }))
   }
 
+  const handleGuestFocus = (field) => () => {
+    setForm((prev) =>
+      prev[field] === 'NA' ? { ...prev, [field]: '' } : prev,
+    )
+  }
+
+  const handleGuestBlur = (field) => (e) => {
+    const next = e.relatedTarget
+    if (next && guestSectionRef.current?.contains(next)) return
+
+    setForm((prev) => normalizeGuestsOnFieldExit(prev, field))
+  }
+
   /** Mismo patrón: FileReader → base64 → setPhotos */
   const handleCapture = (side) => (e) => {
     const file = e.target.files?.[0]
@@ -127,11 +150,23 @@ function App() {
 
     const reader = new FileReader()
 
-    reader.onload = (event) => {
-      const base64Image = event.target.result
-      setPhotos((prev) => ({ ...prev, [side]: base64Image }))
-      setSavingPhoto(null)
-      console.log('[CheckIn:Foto] capturada y guardada', side)
+    reader.onload = async (event) => {
+      try {
+        const optimized = await optimizePhotoForJotform(event.target.result)
+        setPhotos((prev) => ({
+          ...prev,
+          [side]: optimized,
+          sharedLink: null,
+        }))
+        console.log('[CheckIn:Foto] capturada', side)
+      } catch {
+        setErrors((prev) => ({
+          ...prev,
+          [errorKey]: 'No se pudo procesar la foto. Intenta de nuevo.',
+        }))
+      } finally {
+        setSavingPhoto(null)
+      }
     }
 
     reader.onerror = () => {
@@ -145,23 +180,68 @@ function App() {
     reader.readAsDataURL(file)
   }
 
-  const validate = () => {
+  const validate = (formData = form) => {
     const next = {}
 
-    if (!form.huesped1.trim()) next.huesped1 = 'Requerido'
-    if (!form.fechaInicio) next.fechaInicio = 'Requerido'
-    if (!form.fechaSalida) next.fechaSalida = 'Requerido'
-    if (form.fechaInicio && form.fechaSalida && form.fechaSalida < form.fechaInicio) {
+    if (!formData.huesped1.trim()) next.huesped1 = 'Requerido'
+    if (!formData.fechaInicio) next.fechaInicio = 'Requerido'
+    if (!formData.fechaSalida) next.fechaSalida = 'Requerido'
+    if (
+      formData.fechaInicio &&
+      formData.fechaSalida &&
+      formData.fechaSalida < formData.fechaInicio
+    ) {
       next.fechaSalida = 'Debe ser posterior a la fecha de inicio'
     }
-    if (!form.terminos) next.terminos = 'Debes aceptar los términos'
-    if (!form.firma) next.firma = 'La firma es obligatoria'
+    if (!formData.terminos) next.terminos = 'Debes aceptar los términos'
+    if (!formData.firma) next.firma = 'La firma es obligatoria'
     if (!hasStoredPhoto(photos.frontal)) next.fotoFrontal = 'Requerida'
     if (!hasStoredPhoto(photos.trasera)) next.fotoTrasera = 'Requerida'
 
     setErrors(next)
     return Object.keys(next).length === 0
   }
+
+  /** Cuando hay frente y reverso, genera un solo enlace con ambas imágenes. */
+  useEffect(() => {
+    if (!hasStoredPhoto(photos.frontal) || !hasStoredPhoto(photos.trasera)) {
+      return undefined
+    }
+    if (photos.sharedLink) return undefined
+
+    let cancelled = false
+    setUploadingSharedLink(true)
+
+    ;(async () => {
+      try {
+        const combined = await combinePhotosVertical(
+          photos.frontal,
+          photos.trasera,
+        )
+        const url = await uploadPhotoAndGetUrl(combined, 'identificacion-checkin')
+        if (!cancelled) {
+          setPhotos((prev) => ({ ...prev, sharedLink: url }))
+          console.log('[CheckIn:Foto] enlace único', url)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setErrors((prev) => ({
+            ...prev,
+            fotoFrontal:
+              err instanceof PhotoUploadError
+                ? err.message
+                : 'No se pudo generar el enlace de las fotos.',
+          }))
+        }
+      } finally {
+        if (!cancelled) setUploadingSharedLink(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [photos.frontal, photos.trasera, photos.sharedLink])
 
   const resetForm = () => {
     clearCheckinStorage()
@@ -174,20 +254,25 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!validate()) return
+    const formWithGuests = normalizeGuestsForSubmit(form)
+    setForm(formWithGuests)
+
+    if (!validate(formWithGuests)) return
 
     setSubmitting(true)
     setToast(null)
 
     try {
-      const fotoFrontal = await dataUrlToFile(photos.frontal, 'identificacion-frontal.jpg')
-      const fotoTrasera = await dataUrlToFile(photos.trasera, 'identificacion-trasera.jpg')
+      let photoUrl = photos.sharedLink
+      if (!photoUrl) {
+        const combined = await combinePhotosVertical(
+          photos.frontal,
+          photos.trasera,
+        )
+        photoUrl = await uploadPhotoAndGetUrl(combined, 'identificacion-checkin')
+      }
 
-      const result = await submitCheckin({
-        ...form,
-        fotoFrontal,
-        fotoTrasera,
-      })
+      const result = await submitCheckin(formWithGuests, photoUrl)
 
       setToast({
         type: 'success',
@@ -248,7 +333,10 @@ function App() {
             <span className="field__required" aria-hidden="true"> *</span>
           </p>
 
-          <section className="form-section form-section--guests">
+          <section
+            ref={guestSectionRef}
+            className="form-section form-section--guests"
+          >
             <div className="guest-row">
               <label htmlFor="huesped1" className="guest-row__label">
                 Huésped 1<span className="field__required"> *</span>
@@ -260,6 +348,8 @@ function App() {
                 className={`guest-row__input ${errors.huesped1 ? 'input--error' : ''}`}
                 value={form.huesped1}
                 onChange={update('huesped1')}
+                onFocus={handleGuestFocus('huesped1')}
+                onBlur={handleGuestBlur('huesped1')}
                 required
                 autoComplete="name"
                 placeholder="Nombre y apellido"
@@ -276,8 +366,10 @@ function App() {
                 className="guest-row__input"
                 value={form.huesped2}
                 onChange={update('huesped2')}
+                onFocus={handleGuestFocus('huesped2')}
+                onBlur={handleGuestBlur('huesped2')}
                 autoComplete="name"
-                placeholder="Nombre y apellido"
+                placeholder="Nombre y apellido (opcional)"
               />
             </div>
 
@@ -290,8 +382,10 @@ function App() {
                 className="guest-row__input"
                 value={form.huespedExtra}
                 onChange={update('huespedExtra')}
+                onFocus={handleGuestFocus('huespedExtra')}
+                onBlur={handleGuestBlur('huespedExtra')}
                 autoComplete="name"
-                placeholder="Nombre y apellido"
+                placeholder="Nombre y apellido (opcional)"
               />
             </div>
           </section>
@@ -386,16 +480,33 @@ function App() {
               hasError={Boolean(errors.fotoTrasera)}
             />
             {errors.fotoTrasera && <p className="field-error">{errors.fotoTrasera}</p>}
+
+            {uploadingSharedLink && (
+              <p className="photo-capture__saved" role="status">
+                Generando enlace único con ambas fotos…
+              </p>
+            )}
+            {photos.sharedLink && !uploadingSharedLink && (
+              <p className="photo-capture__saved" role="status">
+                ✓ Enlace único listo (frente y reverso)
+              </p>
+            )}
           </section>
 
           <footer className="form-footer">
             <button
               type="submit"
               className="btn-continue"
-              disabled={submitting || savingPhoto || !isCheckinReady(form, photos)}
+              disabled={
+                submitting ||
+                savingPhoto ||
+                uploadingSharedLink ||
+                !isCheckinReady(form, photos) ||
+                (isCheckinReady(form, photos) && !photos.sharedLink)
+              }
               title={
-                savingPhoto
-                  ? 'Espera a que se guarde la foto'
+                savingPhoto || uploadingSharedLink
+                  ? 'Espera a que se genere el enlace de las fotos'
                   : !isCheckinReady(form, photos) && !submitting
                     ? 'Completa todos los campos y toma las dos fotos'
                     : undefined

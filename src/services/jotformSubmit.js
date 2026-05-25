@@ -1,20 +1,7 @@
-import {
-  getJotformApiBase,
-  getJotformConfig,
-  JOTFORM_QIDS,
-} from '../config/jotform'
-import { hasPhotoFile } from '../utils/imageForJotform'
-import { logPhotoFile, logPhotoStep } from '../utils/photoDebug'
-import {
-  appendDateFields,
-  buildHuespedesString,
-  normalizeFirmaBase64,
-} from '../utils/jotformMappers'
-
 /**
- * Error controlado al enviar a JotForm.
- * Incluye la respuesta cruda de la API cuando está disponible.
+ * Envía el check-in a JotForm con enlaces de fotos (no archivos).
  */
+
 export class JotformSubmitError extends Error {
   constructor(message, response = null) {
     super(message)
@@ -24,73 +11,14 @@ export class JotformSubmitError extends Error {
 }
 
 /**
- * Arma el FormData con el mapeo de qids.
- * Fechas desglosadas como objeto; archivos solo PNG/JPG.
+ * @param {object} form - datos del formulario
+ * @param {string} photoUrl - enlace único https con ambas fotos
  */
-export function buildSubmissionFormData(form) {
-  const fd = new FormData()
-  const q = JOTFORM_QIDS
-
-  fd.append(`submission[${q.huespedes}]`, buildHuespedesString(form))
-  appendDateFields(fd, q.fechaInicio, form.fechaInicio)
-  appendDateFields(fd, q.fechaSalida, form.fechaSalida)
-  fd.append(`submission[${q.terminos1}]`, 'Accepted')
-  fd.append(`submission[${q.terminos2}]`, 'Accepted')
-  fd.append(`submission[${q.firma}]`, normalizeFirmaBase64(form.firma))
-
-  logPhotoStep('buildSubmissionFormData → adjuntando fotos', {
-    qidFrontal: q.fotoFrontal,
-    qidTrasera: q.fotoTrasera,
-  })
-  logPhotoFile('buildSubmissionFormData → fotoFrontal', form.fotoFrontal)
-  logPhotoFile('buildSubmissionFormData → fotoTrasera', form.fotoTrasera)
-
-  fd.append(
-    `submission[${q.fotoFrontal}]`,
-    form.fotoFrontal,
-    form.fotoFrontal.name,
-  )
-  fd.append(
-    `submission[${q.fotoTrasera}]`,
-    form.fotoTrasera,
-    form.fotoTrasera.name,
-  )
-
-  logPhotoStep('buildSubmissionFormData → FormData listo')
-  return fd
-}
-
-/**
- * Envía el check-in completo a JotForm.
- * @see https://api.jotform.com/docs/#post-form-id-submissions
- */
-export async function submitCheckin(form) {
-  const { formId, apiKey } = getJotformConfig()
-  const base = getJotformApiBase()
-  const url = `${base}/form/${formId}/submissions?apiKey=${encodeURIComponent(apiKey)}`
-
-  logPhotoStep('submitCheckin → validando fotos antes de enviar')
-  const frontalOk = hasPhotoFile(form.fotoFrontal)
-  const traseraOk = hasPhotoFile(form.fotoTrasera)
-  logPhotoStep('submitCheckin → resultado validación', { frontalOk, traseraOk })
-
-  if (!frontalOk || !traseraOk) {
-    logPhotoStep('submitCheckin → abortado (faltan fotos)')
-    throw new JotformSubmitError('Faltan las fotos de identificación.')
-  }
-
-  logPhotoStep('submitCheckin → enviando POST a JotForm', {
-    url: url.replace(/apiKey=[^&]+/, 'apiKey=***'),
-  })
-
-  const response = await fetch(url, {
+export async function submitCheckin(form, photoUrl) {
+  const response = await fetch('/api/submit-checkin', {
     method: 'POST',
-    body: buildSubmissionFormData(form),
-  })
-
-  logPhotoStep('submitCheckin → respuesta HTTP', {
-    status: response.status,
-    ok: response.ok,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ form, photoUrl }),
   })
 
   let data
@@ -102,18 +30,12 @@ export async function submitCheckin(form) {
     )
   }
 
-  if (!response.ok || data.responseCode !== 200) {
-    const message =
-      data?.message ||
-      data?.info ||
-      `Error al enviar (código ${data?.responseCode ?? response.status})`
-    logPhotoStep('submitCheckin → error JotForm', { message, data })
-    throw new JotformSubmitError(message, data)
+  if (!response.ok) {
+    throw new JotformSubmitError(
+      data?.message || `Error al enviar (código ${response.status})`,
+      data,
+    )
   }
 
-  logPhotoStep('submitCheckin → éxito', {
-    responseCode: data.responseCode,
-    submissionID: data?.content?.submissionID,
-  })
   return data
 }

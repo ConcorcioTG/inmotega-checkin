@@ -5,6 +5,8 @@ export const PHOTOS_STORAGE_KEY = 'inmotega-photos'
 export const INITIAL_PHOTOS = {
   frontal: null,
   trasera: null,
+  /** Enlace único con ambas fotos (ImgBB) */
+  sharedLink: null,
 }
 
 export function loadPhotosFromStorage() {
@@ -19,6 +21,7 @@ export function loadPhotosFromStorage() {
     return {
       frontal: parsed.frontal ?? null,
       trasera: parsed.trasera ?? null,
+      sharedLink: parsed.sharedLink ?? null,
     }
   } catch {
     return INITIAL_PHOTOS
